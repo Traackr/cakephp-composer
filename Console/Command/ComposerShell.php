@@ -4,7 +4,7 @@ App::uses('AppShell', 'Console/Command');
 /**
  * CakePHP Composer plugin
  *
- * @copyright		Copyright © 2012 U-Zyn Chua (http://uzyn.com)
+ * @copyright		Copyright © 2012-2013 U-Zyn Chua (http://uzyn.com)
  * @link 			http://opauth.org
  * @license			MIT License
  */
@@ -25,12 +25,9 @@ class ComposerShell extends AppShell {
 			if (Configure::read('Composer.phar_dir') !== null) {
 				$this->pharDir = Configure::read('Composer.phar_dir');
 			} else {
-				$this->pharDir = dirname(dirname(dirname(__FILE__))).DS.'Vendor'.DS.'Composer'.DS;
+				$this->pharDir = dirname(dirname(dirname(__FILE__))) . DS . 'Vendor' . DS . 'Composer' . DS;
 			}
 		}
-
-		$this->_checkComposerPhar();
-		$this->_checkComposerJSON();
 	}
 
 	/**
@@ -38,14 +35,20 @@ class ComposerShell extends AppShell {
 	 */
 	public function startup() {
 		$this->out("<info>Composer plugin</info> for CakePHP", 2);
+
+		$this->_checkComposerPhar();
+		$this->_checkComposerJSON();
 	}
 
 	/**
 	 * Catch-all for Composer commands
 	 */
 	public function main() {
-		$command = implode(" ", $this->args) . ' ' . self::_optionsToString($this->params);
-		passthru("php {$this->pharDir}composer.phar " . $command);
+		$command = implode(" ", $this->args) . ' ' . $this->_optionsToString($this->params);
+		passthru(sprintf("php %s %s",
+			escapeshellarg($this->pharDir . 'composer.phar'),
+			$command
+		));
 	}
 
 	/**
@@ -53,7 +56,7 @@ class ComposerShell extends AppShell {
 	 * Offer to install updated version if available
 	 */
 	public function reinstall() {
-		$version = @exec("php {$this->pharDir}composer.phar --version");
+		$version = $this->_getComposerVersion();
 		$this->out('Current ' . $version);
 
 		$setup = $this->in('Would you like to update to the latest version of Composer?', array('y', 'n'), 'y');
@@ -101,13 +104,28 @@ class ComposerShell extends AppShell {
 		$parser = parent::getOptionParser();
 
 		$parser->addOptions(array(
+			/**
+			 * Composer options
+			 */
 			'help' => array('short' => 'h'),
 			'quiet' => array('short' => 'q'),
 			'verbose' => array('short' => 'v'),
 			'version' => array('short' => 'V'),
 			'ansi' => array(),
 			'no-ansi' => array(),
-			'no-interaction' => array('short' => 'n')
+			'no-dev' => array(),
+			'no-interaction' => array('short' => 'n'),
+			'profile' => array(),
+			'working-dir' => array('short' => 'd'),
+
+			/**
+			 * CakePHP-Composer-only options
+			 */
+			'yes' => array(
+				'short' => 'y',
+				'help' => 'Automatic yes to prompts, allowing commands to run non-interactively. Automatically installs composer.phar if it is missing.',
+				'plugin_only' => true
+			)
 		));
 
 		return $parser;
@@ -119,20 +137,26 @@ class ComposerShell extends AppShell {
 	 * @param array $options Options array
 	 * @return string Results
 	 */
-	protected static function _optionsToString($options) {
+	protected function _optionsToString($options) {
 		if (empty($options) || !is_array($options)) {
 			return '';
 		}
+
+		$parser = self::getOptionParser();
+		$parserOptions = $parser->options();
 		$results = '';
+
 		foreach ($options as $option => $value) {
-			if (strlen($results) > 0) {
-				$results .= ' ';
-			}
-			if (empty($value)) {
-				$results .= "--$option";
-			}
-			else {
-				$results .= "--$option=$value";
+			if (!isset($parserOptions[$option]->_plugin_only) || !$parserOptions[$option]->_plugin_only) {
+				if (strlen($results) > 0) {
+					$results .= ' ';
+				}
+				if (empty($value)) {
+					$results .= "--$option";
+				}
+				else {
+					$results .= "--$option=$value";
+				}
 			}
 		}
 
@@ -144,16 +168,25 @@ class ComposerShell extends AppShell {
 	 * Offer to install if it isn't available
 	 */
 	protected function _checkComposerPhar() {
-		$version = @exec("php {$this->pharDir}composer.phar --version");
+		$version = $this->_getComposerVersion();
 
 		if (stripos($version, 'Composer') === false || stripos($version, 'version') === false) {
-			$this->out('<warning>Composer is not installed.</warning>');
-			$setup = $this->in('Would you like to install the latest version of Composer?', array('y', 'n'), 'y');
-
-			if ($setup !== 'y') {
-				$this->error("Terminating. You may overwrite the location of composer.phar by defining 'Composer.phar_dir' configuration.");
+			if (file_exists("{$this->pharDir}composer.phar")) {
+				$this->out('<warning>Composer is installed, but there was an error executing it.</warning>');
 			} else {
+				$this->out('<warning>Composer is not installed.</warning>');
+			}
+
+			if (array_key_exists('yes', $this->params)) {
 				$this->_setup();
+			} else {
+				$setup = $this->in('Would you like to install the latest version of Composer?', array('y', 'n'), 'y');
+
+				if ($setup !== 'y') {
+					$this->error("Terminating. You may overwrite the location of composer.phar by defining 'Composer.phar_dir' configuration.");
+				} else {
+					$this->_setup();
+				}
 			}
 		}
 	}
@@ -165,7 +198,7 @@ class ComposerShell extends AppShell {
 	 */
 	protected function _checkComposerJSON() {
 		if (file_exists('composer.json')) $jsonLocation = 'composer.json';
-		else $jsonLocation = APP.'composer.json';
+		else $jsonLocation = APP . 'composer.json';
 
 		$jsonSave = false;
 		if (file_exists($jsonLocation)) {
@@ -196,7 +229,7 @@ class ComposerShell extends AppShell {
 		}
 
 		if ($jsonSave) {
-			if (strnatcmp(phpversion(),'5.4.0') >= 0) {
+			if (strnatcmp(phpversion(), '5.4.0') >= 0) {
 				$encoded = json_encode($json, JSON_PRETTY_PRINT);
 			} else {
 				$encoded = json_encode($json);
@@ -206,4 +239,14 @@ class ComposerShell extends AppShell {
 		}
 	}
 
+	/**
+	 * Get Composer version
+	 */
+	protected function _getComposerVersion() {
+		return @exec(sprintf("php %s --version",
+			escapeshellarg($this->pharDir . 'composer.phar')
+		));
+	}
+
 }
+
